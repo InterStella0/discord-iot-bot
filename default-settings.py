@@ -1,3 +1,5 @@
+from typing import Set
+
 import discord
 
 
@@ -8,4 +10,10 @@ class Settings:
     tuya_username: str = ""
     tuya_password: str = ""
     tuya_socket_id: str = ""
-    intents: discord.Intents = discord.Intents(0b1100011111111011111101)
+    websocket_username: str = ""
+    websocket_password: str = ""
+    pg_username = ""
+    pg_password = ""
+    pg_database_name = ""
+    owner_ids: Set[int] = {}
+    intents: discord.Intents = discord.Intents(0b1100011111111011111111)

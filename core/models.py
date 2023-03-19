@@ -1,53 +1,34 @@
 from __future__ import annotations
 import asyncio
-import contextlib
 import dataclasses
 import datetime
 import enum
 import json
-from typing import Optional, Dict, Any, List, Literal
+import logging
+import traceback
+from typing import Optional, Dict, Any, Literal, TYPE_CHECKING
 
+import aiohttp
 import discord.utils
-import starlight
 import websockets
 from discord.ext import commands
-from tuya_iot import TuyaOpenAPI, TuyaAssetManager, TuyaOpenMQ, AuthType
 
-from core.errors import TuyaError
-from settings import Settings
+from core.views import ViewPrompt
 
-
-class IoTBot(commands.Bot):
-    def __init__(self, settings: Settings) -> None:
-        super().__init__('?uwu ', intents=settings.intents, help_command=starlight.MenuHelpCommand(with_app_command=True))
-        self.settings: Settings = settings
-        self.tuya_client: TuyaClient = TuyaClient(self)
-        self.action = CloseRoom(self)
-
-    async def on_stella_state(self, data: StellaStatePayload):
-        if data.state == "connected":
-            self.action.cancel()
-        elif data.state == "disconnected":
-            self.action.do()
-
-    async def _startup(self) -> None:
-        discord.utils.setup_logging()
-        async with self, self.tuya_client:
-            await self.start(self.settings.bot_token)
-
-    async def retrieve_devices(self):
-        return await self.tuya_client.retrieve_devices_ids(self.settings.tuya_socket_id)
-
-    def startup(self) -> None:
-        asyncio.run(self._startup())
+if TYPE_CHECKING:
+    from core.client import IoTBot
 
 
-class CloseRoom:
+class ControlRoom:
     MAXIMUM_TIME_WAIT = 60
+    CHANNEL_ID = 1085196307016192080
+    GUILD_ID = 1010844235857149952
+    USER_ID = 718854043899920395
 
     def __init__(self, bot: IoTBot):
         self.task: Optional[asyncio.Task] = None
         self.bot: IoTBot = bot
+        self.view: Optional[ViewPrompt] = None
 
     async def wait_until_action(self):
         await asyncio.sleep(self.MAXIMUM_TIME_WAIT)
@@ -56,22 +37,52 @@ class CloseRoom:
         except asyncio.TimeoutError:
             print("TIMEOUT")
 
+    async def prompt(self, question: str, response_true: str, response_false: str,
+                     *, ctx: Optional[commands.Context] = None) -> bool:
+        if ctx:
+            view = ViewPrompt.from_context(ctx)
+        else:
+            messageable = self.bot.get_partial_messageable(self.CHANNEL_ID, guild_id=self.GUILD_ID)
+            view = ViewPrompt(messageable, discord.Object(self.USER_ID))
+        self.view = view
+        return await view.ask(question, response_true, response_false)
+
     async def ask(self):
-        value = await self.prompt('')
+        ask = f"<@{self.USER_ID}> Do you wanna close the room? Choose your action:"
+        false = "Staying open."
+        true = "Closing the room..."
+        value = await self.prompt(ask, true, false)
         if value:
-            if devices := await self.bot.retrieve_devices():
-                device, *_ = devices
-                await self.bot.tuya_client.set_device_value(device['id'], 0, 0)
+            await self.close()
+
+    async def open(self):
+        await self.device_action(True)
+
+    async def close(self):
+        await self.device_action(False)
+
+    async def device_action(self, value: bool, *, countdown: int = 0):
+        if devices := self.bot.tuya_client.sockets:
+            device, *_ = devices
+            if device.value == value and device.countdown == countdown:
                 return
 
-            print("NO DEVICES RESPONSE:", devices)
-        else:
-            print("CANCELLED")
+            success = await self.bot.tuya_client.set_device_value(device.id, value, countdown)
+            if success:
+                device.value = value
+                device.countdown = countdown
+                self.bot.update_device(device.id)
+
+            return
 
     def cancel(self):
         if self.task and not self.task.done():
             self.task.cancel()
             self.task = None
+
+        if self.view is not None:
+            self.view.stop()
+            self.view = None
 
     def do(self):
         if self.task is not None:
@@ -80,31 +91,74 @@ class CloseRoom:
         self.task = asyncio.create_task(self.wait_until_action())
 
 
-
-
 class Webserver:
-    BASE = "ws://localhost:7001"
+    BASE: str = "api.interstella.online"
+    URL_BASE: str = f"https://{BASE}"
+    SOCKET_BASE: str = f"ws://{BASE}/nearby/ws"
 
     def __init__(self, bot: IoTBot):
         self.bot: IoTBot = bot
+        self.task: Optional[asyncio.Task] = None
+        self.logger = logging.getLogger("websockets.server")
+
+    def _dispatch(self, data: Dict[str, Any]) -> None:
+        when = datetime.datetime.strptime(data['when'], '%Y-%m-%dT%H:%M:%S.%f')
+        state = StellaStatePayload(data['state'], when)
+        self.logger.info(f"DISPATCH {Event.STELLA_STATE.value}: {state}")
+        self.bot.dispatch(Event.STELLA_STATE.value, state)
+
+    def dispatch(self, data: str) -> None:
+        try:
+            self._dispatch(json.loads(data))
+        except Exception:
+            self.logger.error("Error dispatching state event.")
+            traceback.print_exc()
 
     async def listen(self, websocket):
         async for message in websocket:
             try:
                 payload = json.loads(message)
             except Exception as e:
-                print("IGNORING ERROR:", e, message)
+                self.logger.error(f"IGNORING ERROR:{e}, {message}")
                 continue
 
-            if payload.get('event') == Event.STELLA_STATE:
-                data = payload['data']
-                state = StellaStatePayload(data['state'], data['when'])
-                self.bot.dispatch(Event.STELLA_STATE, state)
+            if payload.get('event') == Event.STELLA_STATE.value:
+                self.logger.debug(f"RECEIVING: {payload}")
+                self.dispatch(payload['data'])
             else:
-                print("IGNORING MESSAGE FROM WEBSERVER:", message)
+                self.logger.debug(f"IGNORING MESSAGE FROM WEBSERVER:, {message}")
+
+    async def credential(self):
+        settings = self.bot.settings
+        data = {"username": settings.websocket_username, "password": settings.websocket_password}
+        async with aiohttp.ClientSession() as s:
+            async with s.post(f"{self.URL_BASE}/auth/account/token", data=data) as r:
+                if r.status == 401:
+                    raise Exception("Forbidden. Invalid credential.")
+
+                obj = await r.json()
+                return obj['access_token']
+
+    def stop(self):
+        if self.task is not None:
+            self.task.cancel()
+
+    def run(self):
+        self.task = asyncio.create_task(self.start())
+
+    async def _start(self):
+        try:
+            await self.start()
+        except Exception:
+            self.logger.error("FAILURE TO CONNECT TO SERVER.")
+            traceback.print_exc()
 
     async def start(self):
-        async for websocket in websockets.connect(self.BASE):
+        token = await self.credential()
+        uri = f"{self.SOCKET_BASE}?token={token}"
+        self.logger.debug(f"Attempting to establish webserver socket: {uri}")
+        async for websocket in websockets.connect(uri):
+            self.logger.info(f"Websocket established: {self.SOCKET_BASE}")
             try:
                 await self.listen(websocket)
             except websockets.ConnectionClosed:
@@ -112,108 +166,11 @@ class Webserver:
 
 
 @dataclasses.dataclass
-class SocketPayload:
-    data_id: str
-    id: str
-    key: str
-    status: List[Dict[str, Any]]
-    t: int
-    pv: str
-    protocol: int
-    sign: str
-
-
-@dataclasses.dataclass
 class StellaStatePayload:
-    state: Literal['connect', 'disconnect']
+    state: Literal['connected', 'disconnected']
     when: datetime.datetime
 
 
 class Event(enum.Enum):
     SOCKET = 'socket'
-    STELLA_STATE = 'stella_state'
-
-
-class TuyaClient:
-    BASE = "https://openapi.tuyaeu.com"
-
-    def __init__(self, bot: IoTBot) -> None:
-        self.bot: IoTBot = bot
-        self.client_api: TuyaOpenAPI = TuyaOpenAPI(
-            self.BASE, bot.settings.tuya_access_id, bot.settings.tuya_secret, auth_type=AuthType.CUSTOM
-        )
-        self.asset_client: TuyaAssetManager = TuyaAssetManager(self.client_api)
-        self.iot_hub: TuyaOpenMQ = TuyaOpenMQ(self.client_api)
-
-    async def __aenter__(self) -> TuyaClient:
-        await self.connect(self.bot.settings.tuya_username, self.bot.settings.tuya_password)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        await self.cleanup()
-
-    async def connect(self, username: str, password: str):
-        value = await asyncio.to_thread(self.client_api.connect, username, password)
-        if not value['success']:
-            raise TuyaError(value['msg'], value['code'])
-
-        self.iot_hub.start()
-        self.iot_hub.add_message_listener(self.on_message)
-        return value
-
-    def on_message(self, data: Dict[str, Any]):
-        if not (received := data.get('data')):
-            return
-
-        payload = SocketPayload(
-            data_id=received['dataId'], id=received['devId'], key=received['productKey'],
-            protocol=data['protocol'], pv=data['pv'], sign=data['sign'], t=data['t'],
-            status=received['status']
-        )
-        self.bot.dispatch(Event.SOCKET, payload)
-
-    async def post(self, endpoint: str, body: Optional[dict] = None):
-        return await asyncio.to_thread(self.client_api.post, endpoint, body)
-
-    async def get(self, endpoint: str, params: Optional[dict] = None):
-        return await asyncio.to_thread(self.client_api.get, endpoint, params)
-
-    async def retrieve_devices_ids(self, socket_id: str):
-        return await asyncio.to_thread(self.asset_client.get_device_list, socket_id)
-
-    async def retrieve_devices_info(self, *device_ids: str):
-        result = await self.get("/v1.0/iot-03/devices", {"device_ids": ",".join(device_ids)})
-        value = result.get("result")
-        if value is None:
-            return result
-        return value
-
-    async def retrieve_devices_status(self, *device_ids: str):
-        return await self.get("/v1.0/iot-03/devices/status", {"device_ids": ",".join(device_ids)})
-
-    async def retrieve_status(self, device_id: str):
-        endpoint = f"/v1.0/iot-03/devices/{device_id}/status"
-        return await self.get(endpoint)
-
-    async def set_device_value(self, device_id: str, value: bool, countdown: int):
-        endpoint = f'/v1.0/iot-03/devices/{device_id}/commands'
-        cmds = {"commands": [{"code": "switch_1", "value": value}, {'code': 'countdown_1', 'value': countdown}]}
-        return await self.post(endpoint, cmds)
-
-    async def toggle_device(self, device_id: str, countdown: int):
-        status = await self.retrieve_status(device_id)
-        result = status.get('result')
-        if result is None:
-            return status
-
-        value = False
-        for val in result:
-            if val['code'] == 'switch_1':
-                value = not val['value']
-                break
-
-        return await self.set_device_value(device_id, value, countdown)
-
-    async def cleanup(self):
-        with contextlib.suppress(AttributeError):
-            self.iot_hub.stop()
+    STELLA_STATE = 'state'

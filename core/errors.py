@@ -1,4 +1,11 @@
-class TuyaError(Exception):
-    def __init__(self, msg, code) -> None:
-        self.message = msg
-        self.code = code
+class ViewError(Exception):
+    pass
+
+
+class NotAuthorError(ViewError):
+    pass
+
+
+class FatalViewError(ViewError):
+    pass
+
