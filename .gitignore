@@ -131,4 +131,4 @@ dmypy.json
 # Stella
 .idea/
 settings.py
-
+discord-iot-bot.service

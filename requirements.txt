@@ -2,4 +2,4 @@ discord.py>=2.2
 starlight-dpy @ git+https://github.com/InterStella0/starlight-dpy@c8e80ffde1f8e73c6c353005c0a178304b6e6270
 tuya-iot-py-sdk>=0.6.6
 websockets>=10.4
-
+asyncpg>=0.27.0

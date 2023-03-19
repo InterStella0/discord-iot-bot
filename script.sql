@@ -1,5 +1,7 @@
 CREATE DATABASE iot_discord;
 
+\c iot_discord
+
 CREATE TABLE device_info_view(
     device_id TEXT,
     author_id BIGINT,
