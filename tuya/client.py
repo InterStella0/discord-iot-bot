@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
 from tuya_iot import TuyaOpenAPI, TuyaAssetManager, TuyaOpenMQ, AuthType
@@ -27,6 +28,7 @@ class TuyaClient:
         self.asset_client: TuyaAssetManager = TuyaAssetManager(self.client_api)
         self.iot_hub: TuyaOpenMQ = TuyaOpenMQ(self.client_api)
         self._sockets_infos: Dict[str, Socket] = {}
+        self.logger: logging.Logger = logging.getLogger('tuya.client')
 
     @property
     def sockets(self):
@@ -50,7 +52,7 @@ class TuyaClient:
         self.iot_hub.start()
         self.iot_hub.add_message_listener(self.on_message)
         await self.cache_fill()
-        print("CACHE FILLED", self._sockets_infos)
+        self.logger.debug(f"CACHE FILLED: {self._sockets_infos}")
         return value
 
     async def fetch_device_ids(self) -> List[str]:
@@ -95,9 +97,10 @@ class TuyaClient:
         if (protocol := data['protocol']) in factory:  # REPORT DEVICE
             payload = WebSocketProtocol.from_payload(data, factory[protocol])
             self._process_socket(payload)
+            self.logger.debug(f"Dispatching: {data}")
             self.bot.dispatch(Event.SOCKET.value, payload)
         else:
-            print("IGNORING INCOMING MESSAGE", data)
+            self.logger.debug(f"Ignoring incoming message: {data}")
 
     async def post(self, endpoint: str, body: Optional[dict] = None):
         result = await asyncio.to_thread(self.client_api.post, endpoint, body)

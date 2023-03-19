@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import functools
+import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import discord
-from discord.ext import commands
 
 from core.errors import FatalViewError, NotAuthorError, ViewError
 from tuya.models import Socket
 
 if TYPE_CHECKING:
     from core.models import IoTBot, DeviceListResult
+    from core.types import InteractionBot, ContextBot
 
 
 @dataclasses.dataclass
@@ -33,7 +33,7 @@ class ViewPrompt(discord.ui.View):
         self.message = None
 
     @classmethod
-    def from_context(cls, ctx: commands.Context) -> ViewPrompt:
+    def from_context(cls, ctx: ContextBot) -> ViewPrompt:
         return cls(ctx, ctx.author)
 
     async def ask(self, question: str, response_true: str, response_false: str) -> bool:
@@ -48,33 +48,33 @@ class ViewPrompt(discord.ui.View):
         return self.value
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
-    async def on_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def on_confirm(self, interaction: InteractionBot, button: discord.ui.Button):
         await self._response(interaction, True)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
-    async def on_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def on_cancel(self, interaction: InteractionBot, button: discord.ui.Button):
         await self._response(interaction, False)
 
     async def on_timeout(self) -> None:
         if self.message is None:
             return
 
-        await self.message.edit(content="Timeout", view=None)
+        await self.message.delete(delay=0)
 
-    async def _response(self, interaction: discord.Interaction, value: bool):
+    async def _response(self, interaction: InteractionBot, value: bool):
         self.value = value
         response = self.response_true if value else self.response_false
         await interaction.response.send_message(response, ephemeral=True, delete_after=5)
         await self.message.delete(delay=0)
         self.stop()
 
-    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+    async def interaction_check(self, interaction: InteractionBot, /) -> bool:
         if interaction.user.id == self.user.id:
             return True
 
         raise NotAuthorError(f"Only {self.user} can use this interaction.")
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[ViewPrompt], /) -> None:
+    async def on_error(self, interaction: InteractionBot, error: Exception, item: discord.ui.Item[ViewPrompt], /) -> None:
         if interaction.response.is_done():
             await interaction.followup.send(str(error))
         else:
@@ -84,10 +84,11 @@ class ViewPrompt(discord.ui.View):
 class DeviceControl(discord.ui.View):
     def __init__(self, *, bot: Optional[IoTBot] = None, atomic: bool = False):
         super().__init__(timeout=None)
-        self.view_data: Dict[discord.Interaction, ViewDataDevice] = {}
+        self.view_data: Dict[InteractionBot, ViewDataDevice] = {}
         self._socket_data: Dict[str, ViewDataDevice] = {}
         self.bot: Optional[IoTBot] = bot
-        self.atomic = atomic
+        self.atomic: bool = atomic
+        self.logger: logging.Logger = logging.getLogger('view.device')
         if atomic:
             if bot is None:
                 raise ValueError("Bot must be given on atomic set to True.")
@@ -102,7 +103,7 @@ class DeviceControl(discord.ui.View):
         try:
             await data.message.edit(embed=self.format_device(data.device), view=self)
         except discord.NotFound:
-            print("MISSING MESSAGE", data.message.id, "REMOVING...")
+            self.logger.info(f"Missing message {data.message.id} found. Removing...")
             self._socket_data.pop(device_id, None)
             await self.bot.pool.execute("DELETE FROM device_info_view WHERE message_id=$1", data.message.id)
 
@@ -114,6 +115,8 @@ class DeviceControl(discord.ui.View):
             view_data = ViewDataDevice(message=message, author=self.bot.get_user(data['author_id']), device=device)
             self._socket_data[device.id] = view_data
             await self.dispatch_update(device.id)
+
+        self.logger.debug(f"Cache filled: {self._socket_data}")
 
     def format_device(self, device: Socket) -> discord.Embed:
         from tuya.client import TuyaClient  # Lazy
@@ -132,12 +135,12 @@ class DeviceControl(discord.ui.View):
                 .add_field(name="Timer", value=device.countdown or "Not set")
         )
 
-    async def send(self, ctx: commands.Context[IoTBot], device: DeviceListResult) -> None:
+    async def send(self, ctx: ContextBot, device: DeviceListResult) -> None:
         embed = self.format_device(device)
         message = await ctx.send(embed=embed, view=self)
         await self.store_data(ctx, device.id, message)
 
-    async def store_data(self, ctx: commands.Context[IoTBot], device_id: str, message: discord.Message) -> None:
+    async def store_data(self, ctx: ContextBot, device_id: str, message: discord.Message) -> None:
         bot = ctx.bot
         view_data = bot.get_view_data(device_id)
         if view_data is not None:
@@ -154,7 +157,7 @@ class DeviceControl(discord.ui.View):
             data = ViewDataDevice(message=message, author=ctx.author, device=device)
             bot.device_control_view._socket_data[device.id] = data
 
-    async def fetch_data(self, interaction: discord.Interaction[IoTBot]) -> ViewDataDevice:
+    async def fetch_data(self, interaction: InteractionBot) -> ViewDataDevice:
         if interaction in self.view_data:
             return self.view_data[interaction]
 
@@ -172,21 +175,21 @@ class DeviceControl(discord.ui.View):
         return data
 
     @discord.ui.button(label="Open", style=discord.ButtonStyle.green, custom_id="iot-device-open")
-    async def on_open(self, interaction: discord.Interaction[IoTBot], button: discord.ui.Button):
+    async def on_open(self, interaction: InteractionBot, button: discord.ui.Button):
         await self._response(interaction, True)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.red, custom_id="iot-device-close")
-    async def on_close(self, interaction: discord.Interaction[IoTBot], button: discord.ui.Button):
+    async def on_close(self, interaction: InteractionBot, button: discord.ui.Button):
         await self._response(interaction, False)
 
-    def get_device(self, interaction: discord.Interaction[IoTBot], device_id: str) -> Socket:
+    def get_device(self, interaction: InteractionBot, device_id: str) -> Socket:
         device = interaction.client.tuya_client.get_socket(device_id)
         if device:
             return device
         else:
             raise FatalViewError("This is no longer a valid view.")
 
-    async def _response(self, interaction: discord.Interaction[IoTBot], value: bool):
+    async def _response(self, interaction: InteractionBot, value: bool):
         await interaction.response.defer()
         data = await self.fetch_data(interaction)
         device = data.device
@@ -204,14 +207,14 @@ class DeviceControl(discord.ui.View):
         else:
             await interaction.followup.send(f"Something went wrong with {response.format(device.name).lower()}")
 
-    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+    async def interaction_check(self, interaction: InteractionBot, /) -> bool:
         data = await self.fetch_data(interaction)
         if interaction.user == data.author:
             return True
 
         raise NotAuthorError(f"Only {data.author} can use this interaction.")
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[Any], /) -> None:
+    async def on_error(self, interaction: InteractionBot, error: Exception, item: discord.ui.Item[Any], /) -> None:
         response = interaction.response.send_message if not interaction.response.is_done() else interaction.followup.send
         if isinstance(error, FatalViewError):
             self.stop()

@@ -1,4 +1,3 @@
-import traceback
 from typing import List
 
 import discord.utils
@@ -10,12 +9,14 @@ from starlight.star_commands.views.pagination import SimplePaginationView
 import settings
 from core.client import IoTBot
 from core.views import DeviceControl
-from tuya.models import DeviceListResult, WebSocketProtocol, Socket
+from tuya.models import Socket
+
+from core.types import InteractionBot, ContextBot
 
 bot = IoTBot(settings.Settings)
 
 @bot.hybrid_command(help="Lists all devices within your asset.")
-async def sockets(ctx: commands.Context):
+async def sockets(ctx: ContextBot):
     devices = bot.tuya_client.sockets
     paginator = SimplePaginationView(discord.utils.as_chunks(devices, 5), cache_page=True)
     async for item in starlight.inline_pagination(paginator, ctx):
@@ -33,7 +34,7 @@ async def sockets(ctx: commands.Context):
 
 @bot.hybrid_command(help="Controlling a device within your asset.")
 @app_commands.describe(name="Device id or name to control.")
-async def control_device(ctx: commands.Context, *, name: str):
+async def control_device(ctx: ContextBot, *, name: str):
     device = bot.tuya_client.get_socket(name)
     if device is None:
         device = discord.utils.get(bot.tuya_client.sockets, name=name)
@@ -45,7 +46,7 @@ async def control_device(ctx: commands.Context, *, name: str):
 
 
 @control_device.autocomplete('name')
-async def auto_complete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+async def auto_complete(interaction: InteractionBot, current: str) -> List[app_commands.Choice[str]]:
     list_sockets = bot.tuya_client.sockets
     if current != '':
         list_sockets = starlight.search(list_sockets, name=starlight.Fuzzy(current))
@@ -54,7 +55,7 @@ async def auto_complete(interaction: discord.Interaction, current: str) -> List[
     return choices
 
 @bot.event
-async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+async def on_command_error(ctx: ContextBot, error: commands.CommandError):
     error = getattr(error, "original", error)
     if isinstance(error, commands.CommandNotFound):
         return
@@ -63,20 +64,15 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     raise error
 
 
-@bot.event
-async def on_socket(data: WebSocketProtocol):
-    print("INCOMING SOCKET", data)
-
-
 @bot.command()
-async def sync(ctx: commands.Context):
+async def sync(ctx: ContextBot):
     bot.tree.copy_global_to(guild=ctx.guild)
     cmds = await bot.tree.sync(guild=ctx.guild)
     await ctx.send(f"Synced {len(cmds)} commands")
 
 
 @bot.check
-async def bot_check(ctx: commands.Context):
+async def bot_check(ctx: ContextBot):
     return await bot.is_owner(ctx.author)
 
 

@@ -1,6 +1,6 @@
 import asyncio
-from typing import List, Optional, Dict
-from weakref import WeakKeyDictionary, WeakValueDictionary
+from typing import Optional
+from weakref import WeakValueDictionary
 
 import asyncpg
 import discord

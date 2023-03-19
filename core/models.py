@@ -11,8 +11,8 @@ from typing import Optional, Dict, Any, Literal, TYPE_CHECKING
 import aiohttp
 import discord.utils
 import websockets
-from discord.ext import commands
 
+from core.types import ContextBot
 from core.views import ViewPrompt
 
 if TYPE_CHECKING:
@@ -29,16 +29,18 @@ class ControlRoom:
         self.task: Optional[asyncio.Task] = None
         self.bot: IoTBot = bot
         self.view: Optional[ViewPrompt] = None
+        self.logger: logging.Logger = logging.getLogger('client.control')
 
     async def wait_until_action(self):
         await asyncio.sleep(self.MAXIMUM_TIME_WAIT)
         try:
+            self.logger.debug("Asking stella...")
             await self.ask()
         except asyncio.TimeoutError:
-            print("TIMEOUT")
+            self.logger.debug("Timeout")
 
     async def prompt(self, question: str, response_true: str, response_false: str,
-                     *, ctx: Optional[commands.Context] = None) -> bool:
+                     *, ctx: Optional[ContextBot] = None) -> bool:
         if ctx:
             view = ViewPrompt.from_context(ctx)
         else:
@@ -104,7 +106,7 @@ class Webserver:
     def _dispatch(self, data: Dict[str, Any]) -> None:
         when = datetime.datetime.strptime(data['when'], '%Y-%m-%dT%H:%M:%S.%f')
         state = StellaStatePayload(data['state'], when)
-        self.logger.info(f"DISPATCH {Event.STELLA_STATE.value}: {state}")
+        self.logger.debug(f"DISPATCH {Event.STELLA_STATE.value}: {state}")
         self.bot.dispatch(Event.STELLA_STATE.value, state)
 
     def dispatch(self, data: str) -> None:
@@ -162,7 +164,10 @@ class Webserver:
             try:
                 await self.listen(websocket)
             except websockets.ConnectionClosed:
-                continue
+                self.logger.info(f"Websocket cut. Retrying...")
+            except Exception as e:
+                self.logger.error(f"Error occurred: {e}")
+                traceback.print_exc()
 
 
 @dataclasses.dataclass
