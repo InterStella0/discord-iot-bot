@@ -116,12 +116,13 @@ class DeviceControl(discord.ui.View):
             await self.dispatch_update(device.id)
 
     def format_device(self, device: Socket) -> discord.Embed:
+        from tuya.client import TuyaClient  # Lazy
         self.on_open.disabled = device.value
         self.on_close.disabled = not device.value
         color = discord.Color.green() if device.value else discord.Color.red()
         state = "\U0001f7e9" if device.value else "\U0001f7e5"
         return (discord.Embed(title=f"{state} {device.name}", color=color)
-                .set_thumbnail(url=f"https://images.tuyaeu.com/{device.icon}")
+                .set_thumbnail(url=f"{TuyaClient.BASE_IMAGE}/{device.icon}")
                 .add_field(name="ID", value=device.id, inline=False)
                 .add_field(name="Category", value=device.category_name)
                 .add_field(name="Status", value="Online" if device.online else "Offline")
