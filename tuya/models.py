@@ -77,7 +77,7 @@ class ReportDeviceStatusData(ProtocolData):
     data_id: str
     dev_id: str
     product_key: str
-    status: List[Dict[str, Any]]
+    status: List[StatusItem]
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> ReportDeviceStatusData:

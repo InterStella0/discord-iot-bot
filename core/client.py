@@ -2,6 +2,7 @@ import asyncio
 from typing import Optional
 from weakref import WeakValueDictionary
 
+import aiohttp
 import asyncpg
 import discord
 import starlight
@@ -24,6 +25,7 @@ class IoTBot(commands.Bot):
         self.server = Webserver(self)
         self.recent_task: WeakValueDictionary[str, asyncio.Task] = WeakValueDictionary()
         self.device_control_view: Optional[DeviceControl] = None
+        self.power_update: Optional[discord.Webhook] = None
 
     def get_view_data(self, device_id: str) -> Optional[ViewDataDevice]:
         return self.device_control_view._socket_data.get(device_id)
@@ -54,7 +56,8 @@ class IoTBot(commands.Bot):
 
     async def _startup(self) -> None:
         discord.utils.setup_logging()
-        async with self, self.tuya_client, await self.connect_to_db() as self.pool:
+        async with self, self.tuya_client, await self.connect_to_db() as self.pool, aiohttp.ClientSession() as self.session:
+            self.power_update = discord.Webhook.from_url(self.settings.current_monitor_webhook, session=self.session)
             self.device_control_view = view = DeviceControl(bot=self, atomic=True)
             self.add_view(view)
             self.server.run()

@@ -214,14 +214,21 @@ class DeviceControl(discord.ui.View):
 
         raise NotAuthorError(f"Only {data.author} can use this interaction.")
 
-    async def on_error(self, interaction: InteractionBot, error: Exception, item: discord.ui.Item[Any], /) -> None:
+    async def send_regardless(self, interaction: InteractionBot, *args, **kwargs):
         response = interaction.response.send_message if not interaction.response.is_done() else interaction.followup.send
+        try:
+            await response(*args, **kwargs)
+        except discord.HTTPException:
+            await interaction.followup.send(*args, **kwargs)
+
+    async def on_error(self, interaction: InteractionBot, error: Exception, item: discord.ui.Item[Any], /) -> None:
+        handled = False
         if isinstance(error, FatalViewError):
             self.stop()
             await interaction.message.edit(view=None)
-            await response(str(error), ephemeral=True)
+            handled = True
         elif isinstance(error, ViewError):
-            await response(str(error), ephemeral=True)
-        else:
-            await response(str(error), ephemeral=True)
+            handled = True
+        await self.send_regardless(interaction, str(error), ephemeral=True)
+        if handled:
             raise error

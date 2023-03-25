@@ -9,7 +9,7 @@ from starlight.star_commands.views.pagination import SimplePaginationView
 import settings
 from core.client import IoTBot
 from core.views import DeviceControl
-from tuya.models import Socket
+from tuya.models import Socket, WebSocketProtocol, ReportDeviceStatusData
 
 from core.types import InteractionBot, ContextBot
 
@@ -43,6 +43,23 @@ async def control_device(ctx: ContextBot, *, name: str):
         raise commands.CommandError(f"No device name or id found with {name}")
 
     await DeviceControl().send(ctx, device)
+
+
+@bot.event
+async def on_socket(protocol: WebSocketProtocol):
+    if isinstance(data := protocol.data, ReportDeviceStatusData):
+        data: ReportDeviceStatusData
+        if any([x in status.code for x in ('current', 'power', 'voltage') for status in data.status]):
+            device = bot.tuya_client.get_socket(data.dev_id)
+            embed = discord.Embed(
+                title=f"{device.name} Power Update",
+                description=f"**ID**: {device.id}\n"
+                            f"**Power:** `{device.power}`\n"
+                            f"**Voltage:** `{device.voltage}`\n"
+                            f"**Current:** `{device.current}`",
+                timestamp=discord.utils.utcnow()
+            )
+            await bot.power_update.send(embed=embed)
 
 
 @control_device.autocomplete('name')

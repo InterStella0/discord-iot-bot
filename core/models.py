@@ -11,6 +11,8 @@ from typing import Optional, Dict, Any, Literal, TYPE_CHECKING
 import aiohttp
 import discord.utils
 import websockets
+from discord.backoff import ExponentialBackoff
+from websockets.exceptions import InvalidStatusCode
 
 from core.types import ContextBot
 from core.views import ViewPrompt
@@ -159,15 +161,35 @@ class Webserver:
         token = await self.credential()
         uri = f"{self.SOCKET_BASE}?token={token}"
         self.logger.debug(f"Attempting to establish webserver socket: {uri}")
-        async for websocket in websockets.connect(uri):
-            self.logger.info(f"Websocket established: {self.SOCKET_BASE}")
+        backoff = ExponentialBackoff()
+        while True:
             try:
-                await self.listen(websocket)
+                async with websockets.connect(uri) as websocket:
+                    self.logger.info(f"Websocket established: {self.SOCKET_BASE}")
+                    try:
+                        await self.listen(websocket)
+                    except websockets.ConnectionClosed:
+                        self.logger.info(f"Websocket cut. Retrying...")
+                    except Exception as e:
+                        self.logger.error(f"Error occurred: {e}")
+                        traceback.print_exc()
+            except InvalidStatusCode as e:
+                if e.status_code == 403:
+                    token = await self.credential()
+                    uri = f"{self.SOCKET_BASE}?token={token}"
+                    continue
+
+                self.logger.error(f"InvalidStatusCode: {e}")
+
             except websockets.ConnectionClosed:
-                self.logger.info(f"Websocket cut. Retrying...")
+                self.logger.info(f"[OUTER] Websocket cut. Retrying...")
             except Exception as e:
-                self.logger.error(f"Error occurred: {e}")
+                self.logger.error(f"[OUTER] Error occurred: {e}")
                 traceback.print_exc()
+
+            delay = backoff.delay()
+            self.logger.info(f"Retrying in {delay}")
+            await asyncio.sleep(delay)
 
 
 @dataclasses.dataclass

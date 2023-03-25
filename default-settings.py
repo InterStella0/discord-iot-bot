@@ -16,4 +16,5 @@ class Settings:
     pg_password = ""
     pg_database_name = ""
     owner_ids: Set[int] = {}
+    current_monitor_webhook = ""
     intents: discord.Intents = discord.Intents(0b1100011111111011111111)
