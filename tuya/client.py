@@ -9,7 +9,7 @@ from tuya_iot import TuyaOpenAPI, TuyaAssetManager, TuyaOpenMQ, AuthType
 
 from tuya.errors import TuyaError, TuyaMissingPermissions
 from tuya.models import DeviceListResult, CursorPage, DeviceStatus, WebSocketProtocol, ReportDeviceStatusData, \
-    Protocol20, Socket, GoPresence
+    Protocol20, Socket, GoPresence, Device
 from core.models import Event
 
 if TYPE_CHECKING:
@@ -27,15 +27,19 @@ class TuyaClient:
         )
         self.asset_client: TuyaAssetManager = TuyaAssetManager(self.client_api)
         self.iot_hub: TuyaOpenMQ = TuyaOpenMQ(self.client_api)
-        self._sockets_infos: Dict[str, Socket] = {}
+        self._devices_infos: Dict[str, Socket] = {}
         self.logger: logging.Logger = logging.getLogger('tuya.client')
 
     @property
     def sockets(self):
-        return [*self._sockets_infos.values()]
+        return [*filter(lambda x: isinstance(x, Socket), self._devices_infos.values())]
 
-    def get_socket(self, id: str) -> Optional[Socket]:
-        return self._sockets_infos.get(id)
+    @property
+    def devices(self):
+        return [*self._devices_infos.values()]
+
+    def get_device(self, id: str) -> Optional[Device]:
+        return self._devices_infos.get(id)
 
     async def __aenter__(self) -> TuyaClient:
         await self.connect(self.bot.settings.tuya_username, self.bot.settings.tuya_password)
@@ -52,7 +56,7 @@ class TuyaClient:
         self.iot_hub.start()
         self.iot_hub.add_message_listener(self.on_message)
         await self.cache_fill()
-        self.logger.debug(f"CACHE FILLED: {self._sockets_infos}")
+        self.logger.debug(f"CACHE FILLED: {self._devices_infos}")
         return value
 
     async def fetch_device_ids(self) -> List[str]:
@@ -62,21 +66,21 @@ class TuyaClient:
         devices = await self.fetch_device_ids()
         return await self.fetch_devices_info(*devices)
 
-    async def fetch_sockets(self) -> List[Socket]:
+    async def fetch_devices_states(self) -> List[Device]:
         devices = await self.fetch_devices()
-        sockets = {x.id: x for x in map(Socket, devices)}
-        for item in await self.fetch_devices_status(*sockets):
-            sockets[item.id].update_from_status(item.status)
+        devices_obj = {x.id: x for x in map(Device._factory, devices)}
+        for item in await self.fetch_devices_status(*devices_obj):
+            devices_obj[item.id].update_from_status(item.status)
 
-        return [*sockets.values()]
+        return [*devices_obj.values()]
 
     async def cache_fill(self):
-        self._sockets_infos = {x.id: x for x in await self.fetch_sockets()}
+        self._devices_infos = {x.id: x for x in await self.fetch_devices_states()}
 
     def _process_socket(self, payload: WebSocketProtocol) -> None:
         if payload.protocol == 4:
             data: ReportDeviceStatusData = payload.data
-            socket = self._sockets_infos.get(data.dev_id)
+            socket = self._devices_infos.get(data.dev_id)
             if socket is None:
                 return
 
@@ -85,7 +89,7 @@ class TuyaClient:
         elif payload.protocol == 20:
             data: Protocol20 = payload.data
             if isinstance(data.biz_data, GoPresence):
-                socket = self._sockets_infos.get(data.dev_id)
+                socket = self._devices_infos.get(data.dev_id)
                 if socket is None:
                     return
 
@@ -95,12 +99,12 @@ class TuyaClient:
     def on_message(self, data: Dict[str, Any]):
         factory = {4: ReportDeviceStatusData, 20: Protocol20}
         if (protocol := data['protocol']) in factory:  # REPORT DEVICE
+            self.logger.info(f"Dispatching: {data}")
             payload = WebSocketProtocol.from_payload(data, factory[protocol])
             self._process_socket(payload)
-            self.logger.debug(f"Dispatching: {data}")
-            self.bot.dispatch(Event.SOCKET.value, payload)
+            self.bot.dispatch(Event.DEVICE_UPDATE.value, payload)
         else:
-            self.logger.debug(f"Ignoring incoming message: {data}")
+            self.logger.info(f"Ignoring incoming message: {data}")
 
     async def post(self, endpoint: str, body: Optional[dict] = None):
         result = await asyncio.to_thread(self.client_api.post, endpoint, body)

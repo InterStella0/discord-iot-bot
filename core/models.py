@@ -199,5 +199,5 @@ class StellaStatePayload:
 
 
 class Event(enum.Enum):
-    SOCKET = 'socket'
+    DEVICE_UPDATE = 'device_update'
     STELLA_STATE = 'state'

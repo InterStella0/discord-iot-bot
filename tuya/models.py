@@ -1,6 +1,6 @@
 from __future__ import annotations
 import dataclasses
-from typing import List, Dict, Any, Optional, Generic, TypeVar
+from typing import List, Dict, Any, Optional
 
 
 class ProtocolData:
@@ -130,13 +130,14 @@ class CursorPage:
         )
 
 
-class Socket:
-    def __init__(self, device_state: DeviceListResult) -> None:
+class Device:
+    def __init__(self, device_state: DeviceListResult):
+        from tuya.client import TuyaClient  # Lazy
         self.name = device_state.name
         self.gateway_id = device_state.gateway_id
         self.asset_id = device_state.asset_id
         self.id = device_state.id
-        self.icon = device_state.icon
+        self.icon = TuyaClient.BASE_IMAGE + '/'+ device_state.icon
         self.category = device_state.category
         self.category_name = device_state.category_name
         self.model = device_state.model
@@ -144,6 +145,32 @@ class Socket:
         self.product_name = device_state.product_name
         self.product_id = device_state.product_id
         self.ip = device_state.ip
+
+    @classmethod
+    def _factory(cls, device_state: DeviceListResult):
+        factory = {'mcs': ContactSensor, 'cz': Socket}
+        return factory.get(device_state.category, cls)(device_state)
+
+    def update_from_status(self, status: DeviceStatus):
+        pass
+
+
+class ContactSensor(Device):
+    def __init__(self, device_state: DeviceListResult):
+        super().__init__(device_state)
+        self.battery_state = None
+        self.doorcontact_state = None
+
+    def update_from_status(self, status: DeviceStatus):
+        attrs = {'doorcontact_state': 'doorcontact_state', 'battery_state': 'battery_state'}
+        for status_value in status:
+            if status_value.code in attrs:
+                setattr(self, attrs[status_value.code], status_value.value)
+
+
+class Socket(Device):
+    def __init__(self, device_state: DeviceListResult) -> None:
+        super().__init__(device_state)
         self.value: bool = False
         self.voltage: int = 0
         self.current: int = 0

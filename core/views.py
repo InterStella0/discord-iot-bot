@@ -111,7 +111,7 @@ class DeviceControl(discord.ui.View):
         # for dynamic message update
         for data in await self.bot.pool.fetch('SELECT * FROM device_info_view'):
             message = self.bot.get_partial_messageable(data['channel_id']).get_partial_message(data['message_id'])
-            device = self.bot.tuya_client.get_socket(data['device_id'])
+            device = self.bot.tuya_client.get_device(data['device_id'])
             view_data = ViewDataDevice(message=message, author=self.bot.get_user(data['author_id']), device=device)
             self._socket_data[device.id] = view_data
             await self.dispatch_update(device.id)
@@ -119,13 +119,12 @@ class DeviceControl(discord.ui.View):
         self.logger.debug(f"Cache filled: {self._socket_data}")
 
     def format_device(self, device: Socket) -> discord.Embed:
-        from tuya.client import TuyaClient  # Lazy
         self.on_open.disabled = device.value
         self.on_close.disabled = not device.value
         color = discord.Color.green() if device.value else discord.Color.red()
         state = "\U0001f7e9" if device.value else "\U0001f7e5"
         return (discord.Embed(title=f"{state} {device.name}", color=color)
-                .set_thumbnail(url=f"{TuyaClient.BASE_IMAGE}/{device.icon}")
+                .set_thumbnail(url=device.icon)
                 .add_field(name="ID", value=device.id, inline=False)
                 .add_field(name="Category", value=device.category_name)
                 .add_field(name="Status", value="Online" if device.online else "Offline")
@@ -153,7 +152,7 @@ class DeviceControl(discord.ui.View):
             view_data.message = message
             view_data.author = ctx.author
         else:
-            device = bot.tuya_client.get_socket(device_id)
+            device = bot.tuya_client.get_device(device_id)
             data = ViewDataDevice(message=message, author=ctx.author, device=device)
             bot.device_control_view._socket_data[device.id] = data
 
@@ -183,7 +182,7 @@ class DeviceControl(discord.ui.View):
         await self._response(interaction, False)
 
     def get_device(self, interaction: InteractionBot, device_id: str) -> Socket:
-        device = interaction.client.tuya_client.get_socket(device_id)
+        device = interaction.client.tuya_client.get_device(device_id)
         if device:
             return device
         else:
